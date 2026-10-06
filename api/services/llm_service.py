@@ -128,7 +128,7 @@ async def analyze_journal_entry(
                     "strict": True,
                     "schema": json_schema,
                 }
-            }
+            },
         )
         if response.status != "completed":
             raise InvalidAnalysisResponseError("Invalid response")
@@ -156,12 +156,14 @@ async def analyze_journal_entry(
 
         # Validate only the generated fields plus the supplied entry_id with
         # AnalysisResponse. Do not accept provider-generated IDs or timestamps.
-        analysis_response = AnalysisResponse.model_validate({
-            "entry_id": entry_id,
-            "sentiment": response_data.get("sentiment"),
-            "summary": response_data.get("summary"),
-            "topics": response_data.get("topics"),
-        })
+        analysis_response = AnalysisResponse.model_validate(
+            {
+                "entry_id": entry_id,
+                "sentiment": response_data.get("sentiment"),
+                "summary": response_data.get("summary"),
+                "topics": response_data.get("topics"),
+            }
+        )
         request_failed = False
         return analysis_response.model_dump()
 
