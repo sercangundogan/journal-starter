@@ -130,7 +130,6 @@ async def analyze_journal_entry(
                 }
             }
         )
-
         if response.status != "completed":
             raise InvalidAnalysisResponseError("Invalid response")
 
