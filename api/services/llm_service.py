@@ -110,7 +110,9 @@ async def analyze_journal_entry(
         - "summary": a concise summary written in exactly two sentences
         - "topics": an array containing 2 to 4 non-empty topic strings
 
-        Make sure all required fields are present, the sentiment is one of the allowed values, the summary contains exactly two sentences, and the topics array contains between 2 and 4 non-empty items.
+        Make sure all required fields are present, the sentiment is one of the allowed values,
+        the summary contains exactly two sentences, and the topics array contains between 2
+        and 4 non-empty strings.
 
         Return JSON only. Do not include markdown, explanations, or any text outside the JSON object.
         """
