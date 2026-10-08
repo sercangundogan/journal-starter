@@ -1,8 +1,16 @@
 import logging
+import os
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from opentelemetry import trace
+from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+from opentelemetry.instrumentation.asyncpg import AsyncPGInstrumentor
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+from opentelemetry.sdk.resources import Resource
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
 from api.config import get_settings
 from api.logging_config import configure_logging
@@ -34,3 +42,32 @@ app = FastAPI(
     lifespan=lifespan,
 )
 app.include_router(journal_router)
+
+
+@app.get("/version")
+def read_version() -> dict[str, str]:
+    """Return the commit that this running process was deployed from."""
+    return {"commit": os.environ.get("COMMIT_SHA", "unknown")}
+
+
+# Configure OpenTelemetry tracing
+resource = Resource.create(
+    {
+        "service.name": "journal-api",
+        "deployment.environment.name": "local",
+    }
+)
+
+provider = TracerProvider(resource=resource)
+provider.add_span_processor(
+    BatchSpanProcessor(
+        OTLPSpanExporter(
+            endpoint="http://localhost:4317",
+            insecure=True,
+        )
+    )
+)
+trace.set_tracer_provider(provider)
+AsyncPGInstrumentor().instrument()
+
+FastAPIInstrumentor.instrument_app(app)

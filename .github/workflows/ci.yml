@@ -5,19 +5,45 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
-    types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled, edited]
 
 permissions:
   contents: read
+  deployments: write
 
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
-  lint:
-    name: Code quality
+  test:
+    name: test
     runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: career_journal
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: career_journal
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/career_journal
+      TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/career_journal_test
+      OPENAI_API_KEY: ci-placeholder-not-used-by-mock
+      OPENAI_BASE_URL: https://example.invalid/v1
+      OPENAI_MODEL: ci-placeholder-not-used-by-mock
+
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -31,6 +57,16 @@ jobs:
 
       - name: Install dependencies
         run: uv sync --locked
+
+      - name: Initialize application and test databases
+        run: |
+          PGPASSWORD=postgres psql \
+            -h localhost -U postgres -d career_journal \
+            -v ON_ERROR_STOP=1 \
+            -f database_setup.sql -f database_setup_test.sql
+
+      - name: Run tests
+        run: uv run pytest -m "not exercise" -v
 
       - name: Ruff check
         run: uv run ruff check .
@@ -41,112 +77,59 @@ jobs:
       - name: Pyright type check
         run: uv run pyright
 
-  safeguards:
-    name: Starter safeguards
+  build:
+    name: build
+    needs: test
     runs-on: ubuntu-latest
-
-    services:
-      postgres:
-        image: postgres:15
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: career_journal
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-
-    env:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: career_journal
-      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/career_journal
-      TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/career_journal_test
-      # Required by api.config.Settings so the app boots. Tests never call a
-      # real LLM — Task 4 uses an SDK client with a mocked HTTP transport — so these
-      # values are never used for network requests.
-      OPENAI_API_KEY: ci-placeholder-not-used-by-mock
-      OPENAI_BASE_URL: https://example.invalid/v1
-      OPENAI_MODEL: ci-placeholder-not-used-by-mock
-
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
-        with:
-          enable-cache: true
-
-      - name: Set up Python
-        run: uv python install 3.14
-
-      - name: Install dependencies
-        run: uv sync --locked
-
-      - name: Initialize application and test databases
-        run: |
-          PGPASSWORD=postgres psql \
-            -h localhost -U postgres -d career_journal \
-            -v ON_ERROR_STOP=1 \
-            -f database_setup.sql -f database_setup_test.sql
-
-      - name: Run starter safeguards
-        run: uv run pytest -m "not exercise" -v
-
-  task:
-    name: Task acceptance
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-
-    services:
-      postgres:
-        image: postgres:15
+      - name: Refresh AWS credentials
         env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: career_journal
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
+          AWS_SIGNIN_REFRESH_TOKEN: ${{ secrets.AWS_SIGNIN_REFRESH_TOKEN }}
+          AWS_SIGNIN_DPOP_KEY: ${{ secrets.AWS_SIGNIN_DPOP_KEY }}
+        run: |
+          python3 -m venv /tmp/aws-refresh
+          /tmp/aws-refresh/bin/pip install --disable-pip-version-check cryptography
+          /tmp/aws-refresh/bin/python .github/scripts/refresh_aws_signin.py
 
-    env:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: career_journal
-      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/career_journal
-      TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/career_journal_test
-      OPENAI_API_KEY: ci-placeholder-not-used-by-mock
-      OPENAI_BASE_URL: https://example.invalid/v1
-      OPENAI_MODEL: ci-placeholder-not-used-by-mock
+      - name: Build and push image
+        env:
+          IMAGE: 734702670862.dkr.ecr.eu-north-1.amazonaws.com/journal-api:${{ github.sha }}
+        run: |
+          aws ecr get-login-password --region eu-north-1 \
+            | docker login --username AWS --password-stdin 734702670862.dkr.ecr.eu-north-1.amazonaws.com
+          docker build -t "$IMAGE" .
+          docker push "$IMAGE"
 
+  deploy:
+    name: deploy
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: https://dx4v5i550mrvh.cloudfront.net
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
-        with:
-          enable-cache: true
-
-      - name: Set up Python
-        run: uv python install 3.14
-
-      - name: Install dependencies
-        run: uv sync --locked
-
-      - name: Initialize application and test databases
+      - name: Refresh AWS credentials
+        env:
+          AWS_SIGNIN_REFRESH_TOKEN: ${{ secrets.AWS_SIGNIN_REFRESH_TOKEN }}
+          AWS_SIGNIN_DPOP_KEY: ${{ secrets.AWS_SIGNIN_DPOP_KEY }}
         run: |
-          PGPASSWORD=postgres psql \
-            -h localhost -U postgres -d career_journal \
-            -v ON_ERROR_STOP=1 \
-            -f database_setup.sql -f database_setup_test.sql
+          python3 -m venv /tmp/aws-refresh
+          /tmp/aws-refresh/bin/pip install --disable-pip-version-check cryptography
+          /tmp/aws-refresh/bin/python .github/scripts/refresh_aws_signin.py
 
-      - name: Run selected task and preceding exercises
-        run: uv run python -m scripts.ci_tests --event "$GITHUB_EVENT_PATH"
+      - name: Install kubectl
+        run: |
+          curl -fsSL -o kubectl "https://dl.k8s.io/release/v1.32.2/bin/linux/amd64/kubectl"
+          sudo install -m 755 kubectl /usr/local/bin/kubectl
+
+      - name: Deploy to EKS
+        run: |
+          aws eks update-kubeconfig --name journal-eks --region eu-north-1
+          IMAGE="734702670862.dkr.ecr.eu-north-1.amazonaws.com/journal-api:${GITHUB_SHA}"
+          kubectl set image deployment/journal-api journal-api="$IMAGE"
+          kubectl set env deployment/journal-api COMMIT_SHA="$GITHUB_SHA"
+          kubectl rollout status deployment/journal-api --timeout=300s
