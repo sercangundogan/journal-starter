@@ -3,7 +3,7 @@ import os
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from opentelemetry import trace
 from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
 from opentelemetry.instrumentation.asyncpg import AsyncPGInstrumentor
@@ -11,6 +11,7 @@ from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from starlette.responses import Response
 
 from api.config import get_settings
 from api.logging_config import configure_logging
@@ -42,6 +43,14 @@ app = FastAPI(
     lifespan=lifespan,
 )
 app.include_router(journal_router)
+
+
+@app.middleware("http")
+async def add_strict_transport_security(request: Request, call_next) -> Response:
+    """Tell browsers to keep using HTTPS for this host."""
+    response = await call_next(request)
+    response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    return response
 
 
 @app.get("/version")
